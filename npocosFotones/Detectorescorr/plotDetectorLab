@@ -1,0 +1,104 @@
+# plot_g2_hbt.py — Visualización y extracción de óptimos desde g2_heralded_hbt.csv
+# Uso:
+#   python plot_g2_hbt.py --csv g2_heralded_hbt.csv --rdark 1e6
+# Requisitos: numpy, pandas, matplotlib
+
+import argparse
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+
+def nearest(arr, value):
+    arr = np.asarray(arr, dtype=float)
+    idx = np.nanargmin(np.abs(arr - value))
+    return float(arr[idx])
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", type=str, default="g2_heralded_hbt.csv", help="Ruta al CSV de entrada")
+    ap.add_argument("--rdark", type=float, default=None, help="Rdark objetivo (Hz) para filtrar (elige el más cercano)")
+    ap.add_argument("--export", type=str, default="optimos_por_ventana.csv", help="Salida CSV de óptimos por ventana")
+    args = ap.parse_args()
+
+    if not os.path.exists(args.csv):
+        raise FileNotFoundError(f"No se encontró {args.csv}")
+
+    df = pd.read_csv(args.csv)
+    df.columns = [c.strip() for c in df.columns]
+
+    needed = {"rate","window_duration","Rdark_H","Rdark_2","Rdark_3","g2_heralded"}
+    if not needed.issubset(set(df.columns)):
+        raise ValueError(f"El CSV debe contener las columnas: {sorted(list(needed))}")
+
+    # Seleccionamos una sola tasa de oscuras (suponiendo iguales H,2,3); usamos Rdark_H
+    rdarks = np.sort(df["Rdark_H"].unique())
+    if args.rdark is None:
+        rdark_sel = float(rdarks[0])
+    else:
+        rdark_sel = nearest(rdarks, args.rdark)
+
+    d = df[df["Rdark_H"] == rdark_sel].copy()
+    if d.empty:
+        raise ValueError("No hay filas con ese Rdark seleccionado")
+
+    # Pivot: filas = rate, columnas = window_duration
+    pivot = d.pivot_table(index="rate", columns="window_duration", values="g2_heralded", aggfunc="mean")
+    rates = np.array(pivot.index, dtype=float)
+    windows = np.array(pivot.columns, dtype=float)
+    g2 = pivot.values
+
+    # Encontrar mínimo global
+    i_min, j_min = np.unravel_index(np.nanargmin(g2), g2.shape)
+    rate_min = float(rates[i_min])
+    win_min = float(windows[j_min])
+    g2_min = float(g2[i_min, j_min])
+
+    # HEATMAP
+    plt.figure(figsize=(8,6))
+    im = plt.imshow(g2, aspect="auto", origin="lower")
+    plt.xticks(range(len(windows)), [f"{w:.0e}" for w in windows], rotation=45)
+    plt.yticks(range(len(rates)), [f"{r:.0e}" for r in rates])
+    plt.colorbar(im, label="g²_heralded(0)")
+    plt.scatter(j_min, i_min, marker="x", s=120, linewidths=2)
+    plt.text(j_min+0.2, i_min+0.2, f"min≈{g2_min:.3f}\nrate≈{rate_min:.2e}\nwin={win_min:.0e}s",
+             fontsize=9, va="bottom", ha="left")
+    plt.xlabel("Ventana de integración (s)")
+    plt.ylabel("Tasa de pares (Hz)")
+    plt.title(f"g²_heralded(0) vs ventana y tasa — Rdark≈{rdark_sel:.2e} Hz")
+    plt.tight_layout()
+    plt.show()
+
+    # ÓPTIMOS POR VENTANA (argmin sobre rate)
+    rows = []
+    for j, w in enumerate(windows):
+        col = g2[:, j]
+        i = int(np.nanargmin(col))
+        rows.append({"window_duration": float(w), "rate_opt": float(rates[i]), "g2_min": float(col[i]), "Rdark": rdark_sel})
+    opt_df = pd.DataFrame(rows).sort_values("window_duration")
+    opt_df.to_csv(args.export, index=False)
+    print(f"[OK] Guardado: {args.export}")
+
+    # CURVAS
+    plt.figure(figsize=(8,6))
+    plt.plot(opt_df["window_duration"], opt_df["rate_opt"], marker="o")
+    plt.xscale("log"); plt.yscale("log")
+    plt.xlabel("Ventana de integración (s)")
+    plt.ylabel("Rate óptimo (Hz)")
+    plt.title(f"Rate óptimo vs ventana — Rdark≈{rdark_sel:.2e} Hz")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(8,6))
+    plt.plot(opt_df["window_duration"], opt_df["g2_min"], marker="s")
+    plt.xscale("log")
+    plt.xlabel("Ventana de integración (s)")
+    plt.ylabel("g² mínimo (en rate óptimo)")
+    plt.title(f"g² mínimo vs ventana — Rdark≈{rdark_sel:.2e} Hz")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    main()
